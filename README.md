@@ -3,10 +3,10 @@ Code used in the study of Vinha et al., 2024, Diversity and Distributions (http
 
 Two R Markdown files are available:
 
-- "1_Ocean_Terrain_Data_Analysis.Rmd"  - with code used to:
+- **"1_Env-DataPrep.Rmd"**  - with code used to:
     - calculate and prepare environmental data (terrain and oceanographical parameters) used for modelling.
   
-- "2_ModelFit.Rmd" - with code used for:
+- **"2_EnsembleModel-Train-Test.Rmd"** - with code used for:
     - variable selection and prepation
     - model training based on Generalized Additive Model (GAM) and Random Forest
     - model testing through 10-fold cross validation
