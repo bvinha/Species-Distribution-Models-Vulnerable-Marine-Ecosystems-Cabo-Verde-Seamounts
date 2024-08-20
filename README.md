@@ -4,15 +4,15 @@ Code used in the study of Vinha et al., 2024, Diversity and Distributions (http
 Two R Markdown files are available:
 
 - "1_Ocean_Terrain_Data_Analysis.Rmd"  - with code used to:
-    - (i) calculate and prepare environmental data (terrain and oceanographical parameters) used for modelling.
+    - calculate and prepare environmental data (terrain and oceanographical parameters) used for modelling.
   
 - "2_ModelFit.Rmd" - with code used for:
-    - (i) variable selection and prepation
-    - (ii) model training based on Generalized Additive Methods (GAM) and Random Forest
-    - (iii) model testing through 10-fold cross validation
-    - (iv) to investigate the extent of spatial auto-correlation in model's residuals
-    - (v) create final model's predictions
-    - (vi) to interpret modelling results by calculating model extrapolation and plotting variable importance and response curves.
+    - variable selection and prepation
+    - model training based on Generalized Additive Model (GAM) and Random Forest
+    - model testing through 10-fold cross validation
+    - to investigate the extent of spatial auto-correlation in model's residuals
+    - create final model's predictions
+    - to interpret modelling results by calculating model extrapolation and plotting variable importance and response curves.
 
 Please download the following datasets to reproduce the code:
 
