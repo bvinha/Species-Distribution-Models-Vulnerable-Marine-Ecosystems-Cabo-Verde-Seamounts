@@ -4,15 +4,15 @@ Code used in the study of Vinha et al., 2024, Diversity and Distributions (http
 Two R Markdown files are available:
 
 - "1_Ocean_Terrain_Data_Analysis.Rmd"  - with code used to:
-    (i) calculate and prepare environmental data (terrain and oceanographical parameters) used for modelling.
+    - (i) calculate and prepare environmental data (terrain and oceanographical parameters) used for modelling.
   
 - "2_ModelFit.Rmd" - with code used for:
-    (i) variable selection and prepation
-    (ii) model training based on Generalized Additive Methods (GAM) and Random Forest
-    (iii) model testing through 10-fold cross validation
-    (iv) to investigate the extent of spatial auto-correlation in model's residuals
-    (v) create final model's predictions
-    (vi) to interpret modelling results by calculating model extrapolation and plotting variable importance and response curves.
+    - (i) variable selection and prepation
+    - (ii) model training based on Generalized Additive Methods (GAM) and Random Forest
+    - (iii) model testing through 10-fold cross validation
+    - (iv) to investigate the extent of spatial auto-correlation in model's residuals
+    - (v) create final model's predictions
+    - (vi) to interpret modelling results by calculating model extrapolation and plotting variable importance and response curves.
 
 Please download the following datasets to reproduce the code:
 
@@ -31,7 +31,6 @@ Vinha, Beatriz (2024). Code to reproduce ensemble species distribution models of
 **Reference of the study where code and data was used:**
 
 - Vinha, B.,  Murillo, F. J.,  Schumacher, M.,  Hansteen, T. H.,  Schwarzkopf, F. U.,  Biastoch, A.,  Kenchington, E., Piraino, S.,  Orejas, C., &  Huvenne, V. A. I. (2024).  Ensemble modelling to predict the distribution of vulnerable marine ecosystems indicator taxa on data-limited seamounts of Cabo Verde (NW Africa). Diversity and Distributions,  00, e13896. https://doi.org/10.1111/ddi.13896
-- 
 
 **DISCLAIMER**
 Some parts of the code presented here were adapated to the objectives of the study, following code and modelling frameworks presented in:
