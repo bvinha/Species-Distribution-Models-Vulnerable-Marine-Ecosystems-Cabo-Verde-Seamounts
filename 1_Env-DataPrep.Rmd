@@ -1,0 +1,398 @@
+---
+title: "Vinha et al. 2024, Ensemble modelling to predict the distribution of vulnerable marine ecosystems indicator taxa on data-limited seamounts of Cabo Verde (NW Africa) - Calculate terrain variables from MB bathymetry and mean oceanographical variables from Viking20X model"
+author: "Beatriz Vinha"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+library(rgdal)
+library(raster)
+library(terra)
+library(spatialEco)
+library(sf)
+library(MultiscaleDTM) #from https://github.com/ailich/MultiscaleDTM
+library(ncdf4) 
+library(rgdal)
+```
+
+Here, the environmental data used
+for modelling is calculated and prepared:
+
+1.  Using a multi-scale approach, we calculate different terrain
+    derivatives from a Multibeam bathymetry grid, representing all data
+    available for the Cabo Verde archipelago, at 100
+    m of resolution.
+
+2.  Extract data from the VIKING20X oceanographic model data (Biastoch
+    et al., 2021), in order to calculate the mean value of each variable
+    and to extract it as a geo-referenced raster. Data from the
+    VIKING20X model corresponds to bottom values of temperature,
+    salinity and ocean velocities (U and V) for the Cabo Verde region.
+    The temporal resolution of the data is from December 2009 to
+    December 2019.
+
+**Data sources:**
+
+-   Bathymetry data and model mask can be downloaded from: 
+
+Vinha, B., Murillo, F. J., Schumacher, M., Hansteen, T., Schwarzkopf, F., Biastoch, A., 
+Kenchington, E., Piraino, S., Orejas, C., Huvenne, V. (2024). Terrain variables used for 
+ensemble distribution modelling of vulnerable marine ecosystems indicator taxa on data-limited 
+seamounts of Cabo Verde (NW Africa) [Dataset]. Dryad. https://doi.org/10.5061/dryad.0vt4b8h5g
+
+-   Oceanographical data can be downloaded from:
+
+Schwarzkopf, F. (2024). Supplementary data to Vinha et al. (2024): Ensemble modelling to 
+predict the distribution of Vulnerable Marine Ecosystems indicator taxa on data-limited 
+seamounts of Cabo Verde (NW Africa) [dataset]. GEOMAR Helmholtz Centre for Ocean Research 
+Kiel [distributor]. hdl:20.500.12085/20248b0a-49fd-4868-90bf-581c61f4b396
+
+**Reference to the study where data and code was used**
+
+Vinha,B., Murillo,F. J.,Schumacher,M., Hansteen,T. H.,Schwarzkopf,F. U.,
+Biastoch,A., Kenchington,E.,Piraino,S.,Orejas,C., & Huvenne,V. A. I.(2024).
+Ensemble modelling to predict the distribution of vulnerable marine ecosystems indicator 
+taxa on data-limited seamounts of Cabo Verde (NW Africa).Diversity and Distributions,
+00, e13896.https://doi.org/10.1111/ddi.13896
+
+# 1. Load data
+
+```{r}
+#Import bathymetry file
+bathy_cv <- raster("00_Caboverde_bathy_100m_UTM26N.tif") 
+plot(bathy_cv)
+```
+
+```{r}
+##Load mask
+seamount_mask <- shapefile("Seamounts_mask_poly.shp")
+bathyseamount_m <- mask(bathy_cv, seamount_mask)
+```
+
+```{r}
+#Import oceanographical data (in nc file format)
+btsal_data <- nc_open('1_VIKING20X.L46-KFS003_1m_20090101_20191231_T_S_CapeVerde_bottom.nc')
+u_data <- nc_open('1_VIKING20X.L46-KFS003_1m_20090101_20191231_U_CapeVerde_bottom.nc')
+v_data <- nc_open('1_VIKING20X.L46-KFS003_1m_20090101_20191231_V_CapeVerde_bottom.nc')
+```
+
+# 2. Calculate Terrain Variables from MB Bathymetry 
+
+## a. Calculate Slope
+
+```{r}
+Slope_3x3 <- SlpAsp(bathyseamount_m, w = c(3,3), unit = "degrees", method = "queen", metrics = c("slope"))
+Slope_9x9 <- SlpAsp(bathyseamount_m, w = c(9,9), unit = "degrees", method = "queen", metrics = c("slope"))
+Slope_17x17 <- SlpAsp(bathyseamount_m, w = c(17,17), unit = "degrees", method = "queen", metrics = c("slope"))
+Slope_33x33 <- SlpAsp(bathyseamount_m, w = c(33,33), unit = "degrees", method = "queen", metrics = c("slope"))
+
+par(mfrow=c(2,2))
+plot(Slope_3x3, main = "Slope 3x3")
+plot(Slope_9x9, main = "Slope 9x9")
+plot(Slope_17x17, main = "Slope 17x17")
+plot(Slope_33x33, main = "Slope 33x33")
+
+#Download Rasters
+writeRaster(Slope_3x3, "01_Slope_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(Slope_9x9, "01_Slope_9x9", format = "GTiff", overwrite = TRUE)
+writeRaster(Slope_17x17, "01_Slope_17x17", format = "GTiff", overwrite = TRUE)
+writeRaster(Slope_33x33, "01_Slope_33x33", format = "GTiff", overwrite = TRUE)
+```
+
+## b. Calculate Aspect (Eastness and Northness)
+
+```{r}
+#####EASTNESS#####
+eastness_3x3 <- SlpAsp(bathyseamount_m, w = c(3,3), unit = "radians", method = "queen", metrics = c("eastness"))
+eastness_9x9 <- SlpAsp(bathyseamount_m, w = c(9,9), unit = "radians", method = "queen", metrics = c("eastness"))
+eastness_17x17 <- SlpAsp(bathyseamount_m, w = c(17,17), unit = "radians", method = "queen", metrics = c("eastness"))
+eastness_33x33 <- SlpAsp(bathyseamount_m, w = c(33,33), unit = "radians", method = "queen", metrics = c("eastness"))
+
+par(mfrow=c(2,2))
+plot(eastness_3x3, main = "Eastness 9x9" )
+plot(eastness_9x9, main = "Eastness 9x9")
+plot(eastness_17x17, main = "Eastness 17x17")
+plot(eastness_33x33, main = "Eastness 33x33")
+
+#Download Rasters
+writeRaster(eastness_3x3, "02_eastness_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(eastness_9x9, "02_eastness_9x9", format = "GTiff", overwrite = TRUE)
+writeRaster(eastness_17x17, "02_eastness_17x17", format = "GTiff", overwrite = TRUE)
+writeRaster(eastness_33x33, "02_eastness_33x33", format = "GTiff", overwrite = TRUE)
+
+#####NORTHNESS#####
+northness_3x3 <- SlpAsp(bathyseamount_m, w = c(3,3), unit = "radians", method = "queen", metrics = c("northness"))
+northness_9x9 <- SlpAsp(bathyseamount_m, w = c(9,9), unit = "radians", method = "queen", metrics = c("northness"))
+northness_17x17 <- SlpAsp(bathyseamount_m, w = c(17,17), unit = "radians", method = "queen", metrics = c("northness"))
+northness_33x33 <- SlpAsp(bathyseamount_m, w = c(33,33), unit = "radians", method = "queen", metrics = c("northness"))
+
+par(mfrow=c(2,2))
+plot(northness_3x3, main = "northness 9x9" )
+plot(northness_9x9, main = "northness 9x9")
+plot(northness_17x17, main = "northness 17x17")
+plot(northness_33x33, main = "northness 33x33")
+
+#Download Rasters
+writeRaster(northness_3x3, "03_northness_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(northness_9x9, "03_northness_9x9", format = "GTiff", overwrite = TRUE)
+writeRaster(northness_17x17, "03_northness_17x17", format = "GTiff", overwrite = TRUE)
+writeRaster(northness_33x33, "03_northness_33x33", format = "GTiff", overwrite = TRUE)
+```
+
+## c. Calculate Terrain Curvature
+
+```{r}
+qmetrics_3x3 <- Qfit(bathyseamount_m, w = c(3,3), unit = "degrees", na.rm = TRUE)
+qmetrics_9x9 <- Qfit(bathyseamount_m, w = c(9,9), unit = "degrees", na.rm = TRUE)
+qmetrics_17x17 <- Qfit(bathyseamount_m, w = c(17,17), unit = "degrees", na.rm = TRUE)
+qmetrics_33x33 <- Qfit(bathyseamount_m, w = c(33,33), unit = "degrees", na.rm = TRUE)
+
+#####Profile curvature#####
+profc_3x3 <- subset(qmetrics_3x3, "profc")
+profc_9x9 <- subset(qmetrics_9x9, "profc")
+profc_17x17 <- subset(qmetrics_17x17, "profc")
+profc_33x33 <- subset(qmetrics_33x33, "profc")
+
+par(mfrow=c(2,2))
+plot(profc_3x3, main="Profile Curvature 3x3")
+plot(profc_9x9, main="Profile Curvature 9x9")
+plot(profc_17x17, main="Profile Curvature 17x17")
+plot(profc_33x33, main="Profile Curvature 33x33")
+
+writeRaster(profc_3x3, "04_profc_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(profc_9x9, "04_profc_9x9", format = "GTiff", overwrite = TRUE)
+writeRaster(profc_17x17, "04_profc_17x17", format = "GTiff", overwrite = TRUE)
+writeRaster(profc_33x33, "04_profc_33x33", format = "GTiff", overwrite = TRUE)
+
+#####Planar curvature#####
+planc_3x3 <- subset(qmetrics_3x3, "planc")
+planc_9x9 <- subset(qmetrics_9x9, "planc")
+planc_17x17 <- subset(qmetrics_17x17, "planc")
+planc_33x33 <- subset(qmetrics_33x33, "planc")
+
+par(mfrow=c(2,2))
+plot(planc_3x3, main="Plan Curvature 3x3")
+plot(planc_9x9, main="Plan Curvature 9x9")
+plot(planc_17x17, main="Plan Curvature 17x17")
+plot(planc_33x33, main="Plan Curvature 33x33")
+
+writeRaster(planc_3x3, "05_planc_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(planc_9x9, "05_planc_9x9", format = "GTiff", overwrite = TRUE)
+writeRaster(planc_17x17, "05_planc_17x17", format = "GTiff", overwrite = TRUE)
+writeRaster(planc_33x33, "05_planc_33x33", format = "GTiff", overwrite = TRUE)
+
+#####Mean curvature#####
+meanc_3x3 <- subset(qmetrics_3x3, "meanc")
+meanc_9x9 <- subset(qmetrics_9x9, "meanc")
+meanc_17x17 <- subset(qmetrics_17x17, "meanc")
+meanc_33x33 <- subset(qmetrics_33x33, "meanc")
+
+par(mfrow=c(2,2))
+plot(meanc_3x3, main="Mean Curvature 3x3")
+plot(meanc_9x9, main="Mean Curvature 9x9")
+plot(meanc_17x17, main="Mean Curvature 17x17")
+plot(meanc_33x33, main="Mean Curvature 33x33")
+
+#Download Rasters
+writeRaster(meanc_3x3, "06_meanc_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(meanc_9x9, "06_meanc_9x9", format = "GTiff", overwrite = TRUE)
+writeRaster(meanc_17x17, "06_meanc_17x17", format = "GTiff", overwrite = TRUE)
+writeRaster(meanc_33x33, "06_meanc_33x33", format = "GTiff", overwrite = TRUE)
+```
+
+## d. Calculate Topographic Position Index (TPI)
+
+```{r}
+######Fine TPI#####
+ftpi_300m <- tpi(bathyseamount_m, win = "rectangle", scale = 3) 
+
+######Broad TPI######
+btpi_1500m <- tpi(bathyseamount_m, win = "rectangle", scale = 15) 
+
+#Plot
+par(mfrow=c(1,2))
+plot(ftpi_300m, main="Fine TPI 300")
+plot(btpi_1500m, main="Broad TPI 1500")
+
+#Download Rasters
+writeRaster(ftpi_300m, "07_ftpi_300m", format = "GTiff", overwrite = TRUE)
+writeRaster(btpi_1500m, "07_btpi_1500m", format = "GTiff", overwrite = TRUE)
+```
+
+## e. Calculate Roughness
+
+```{r}
+rough <- terrain(bathyseamount_m, opt="roughness")
+plot(rough, main="Roughness")
+
+#Download Rasters
+writeRaster(rough, "08_roughness", format = "GTiff")
+```
+
+## f. Calculate Terrain Ruggedness Index (TRI)
+
+```{r}
+tri_3x3 <- terrain(bathyseamount_m, opt=c('tri'))
+plot(tri_3x3, main="TRI (Ruggedness)")
+
+#Download Rasters
+writeRaster(tri_3x3, "09_tri_3x3", format = "GTiff")
+```
+
+## g. Calculate Vector Ruggedness Measure (VRM)
+
+```{r}
+vrm_3x3 <- vrm(bathyseamount_m, s=3)
+vrm_33x33 <- vrm(bathyseamount_m, s=33)
+
+par(mfrow=c(1,2))
+plot(vrm_3x3, main="Vector Ruggedness Measure 3x3")
+plot(vrm_33x33, main="Vector Ruggedness Measure 33x33")
+
+writeRaster(vrm_3x3, "10_vrm_3x3", format = "GTiff", overwrite = TRUE)
+writeRaster(vrm_33x33, "10_vrm_33x33", format = "GTiff", overwrite = TRUE)
+```
+
+# 3. Oceanographic data
+
+Below, the mean value of each oceanographic variable is calculated and
+the final output is converted to a raster.
+
+## a. Bottom Temperature and Salinity
+
+```{r}
+#extract lat, lon and variable (i.e. bottomT and Sali)
+lon <- ncvar_get(btsal_data, "nav_lon")
+lat <- ncvar_get(btsal_data, "nav_lat", verbose = F)
+bt <- ncvar_get(btsal_data, "votemper")
+sal <- ncvar_get(btsal_data, "vosaline")
+```
+
+Each variable will be converted to an array with 3 dimensions (lon, lat
+and time) and by "slicing" it you will select the layer correspondent to
+the first n time (i.e. month) of the data set (n layer); e.g "bT.slice1
+\<- bt[, , 1]", slices the first month of the dataset.
+
+However, I am interested in the mean value of the variable for the whole
+dataset, therefore, I will calculate the mean of the third dimension.
+
+```{r}
+bt.mean <- apply(bt, c(1,2), mean)
+sal.mean <- apply(sal, c(1,2), mean)
+```
+
+Now, create a raster:
+
+```{r}
+#Create raster with mean bottom temperature
+bt.r <- raster(t(bt.mean), xmn=min(lon), xmx=max(lon), ymn=min(lat), ymx=max(lat), crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+
+
+#flip raster
+bt.r <- flip(bt.r, direction='y')
+plot(bt.r)
+```
+
+```{r}
+#Create raster with mean bottom salinity
+sal.r <- raster(t(sal.mean), xmn=min(lon), xmx=max(lon), ymn=min(lat), ymx=max(lat), crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+
+
+#flip raster
+sal.r <- flip(sal.r, direction='y')
+plot(sal.r)
+```
+
+## b. Current Magnitude and Speed
+
+Now, repeat for U and V vectors.
+
+```{r}
+######U CURRENT
+#extract lat, lon and variable 
+lon1 <- ncvar_get(u_data, "nav_lon")
+lat1 <- ncvar_get(u_data, "nav_lat", verbose = F)
+u <- ncvar_get(u_data, "vozocrtx")
+
+#Calculate the mean of the third dimension
+u.mean <- apply(u, c(1,2), mean)
+
+#Convert to raster
+u.r <- raster(t(u.mean), xmn=min(lon1), xmx=max(lon1), ymn=min(lat1), ymx=max(lat1), crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+
+
+#flip raster
+u.r <- flip(u.r, direction='y')
+plot(u.r)
+```
+
+```{r}
+######V CURRENT
+#extract lat, lon and variable 
+lon2 <- ncvar_get(v_data, "nav_lon")
+lat2 <- ncvar_get(v_data, "nav_lat", verbose = F)
+v <- ncvar_get(v_data, "vomecrty")
+
+#Calculate the mean of the third dimension
+v.mean <- apply(v, c(1,2), mean)
+
+#Convert to raster
+v.r <- raster(t(v.mean), xmn=min(lon2), xmx=max(lon2), ymn=min(lat2), ymx=max(lat2), crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+
+
+#flip raster
+v.r <- flip(v.r, direction='y')
+plot(v.r)
+```
+
+And, calculate mean bottom current speed.
+
+```{r}
+#Apply formula to calculate current speed
+cs <- sqrt((v^2)+(u^2))
+
+#calculate mean
+cs.mean <- apply(cs, c(1,2), mean)
+
+#Create raster
+cs.r <- raster(t(cs.mean), xmn=min(lon2), xmx=max(lon2), ymn=min(lat2), ymx=max(lat2), 
+               crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+#flip raster
+cs.r <- flip(cs.r, direction='y')
+
+#Plot
+plot(cs.r)
+```
+
+## c. Re-project layers to UTM26N and save as raster files
+
+```{r}
+#Reproject
+crs <- "+proj=utm +zone=26 +ellps=WGS72 +units=m +no_defs"
+
+meanSal_utm26 <- projectRaster(sal.r, crs=crs)
+meanbT_utm26 <- projectRaster(bt.r, crs=crs)
+meanU_utm26 <- projectRaster(u.r, crs=crs)
+meanV_utm26 <- projectRaster(v.r, crs=crs)
+meanCS_utm26 <- projectRaster(cs.r, crs=crs)
+```
+
+```{r}
+#Plot
+par(mfrow=c(2,2))
+plot(meanSal_utm26, main = "Salinity utm26")
+plot(meanbT_utm26, main = "Temperature utm26")
+plot(meanU_utm26, main = "U utm26")
+plot(meanV_utm26, main = "V utm26")
+```
+
+```{r}
+#Save
+writeRaster(meanSal_utm26, "meanSal_utm26.tif", "GTiff", overwrite=TRUE)
+writeRaster(meanbT_utm26, "meanbT_utm26.tif", "GTiff", overwrite=TRUE)
+writeRaster(meanU_utm26, "meanU_utm26.tif", "GTiff", overwrite=TRUE)
+writeRaster(meanV_utm26, "meanV_utm26.tif", "GTiff", overwrite=TRUE)
+```

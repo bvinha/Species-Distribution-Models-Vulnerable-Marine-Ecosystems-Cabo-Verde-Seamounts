@@ -1,0 +1,1459 @@
+---
+title: "Vinha et al., Species Distribution Modelling of VME indicator taxa in five seamounts of the Cabo Verde archipelago (NW Africa, Eastern Equatorial Atlantic Ocean) - Model train and evaluation"
+author: "Beatriz Vinha"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+library(sf)
+library(usdm)
+library(ggplot2)
+library(randomForest)
+library(precrec)
+library(mgcv)
+library(dismo)
+library(rJava)
+library(pROC)
+library(caret)
+library(performance)
+library(gridExtra)
+library(biomod2)
+library(PresenceAbsence)
+library(RColorBrewer)
+library(sdmvspecies)
+library(spdep)
+library(raster)
+library(rgdal)
+library(corrplot)
+library(dplyr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code is used for:
+- variable selection and prepation
+- model training based on Generalized Additive Model (GAM) and Random Forest
+- model testing through 10-fold cross validation
+- to investigate the extent of spatial auto-correlation in model's residuals
+- create final model's predictions
+- to interpret modelling results by calculating model extrapolation and plotting variable importance and response curves.
+
+**Data sources:**
+- Presence-Absence data of cold-water corals on the seamount of Cabo Verde is published in PANGAEA: 
+Vinha, B.; Hansteen, T. H.; Huvenne, V. A. I.; Orejas, C. (2023): Presence-absence records for 
+four cold-water coral taxa on the seamounts of Cape Verde (NW Africa). 
+PANGAEA, https://doi.org/10.1594/PANGAEA.963704
+
+-   Bathymetry data and model mask can be downloaded from: 
+
+Vinha, B., Murillo, F. J., Schumacher, M., Hansteen, T., Schwarzkopf, F., Biastoch, A., 
+Kenchington, E., Piraino, S., Orejas, C., Huvenne, V. (2024). Terrain variables used for 
+ensemble distribution modelling of vulnerable marine ecosystems indicator taxa on data-limited 
+seamounts of Cabo Verde (NW Africa) [Dataset]. Dryad. https://doi.org/10.5061/dryad.0vt4b8h5g
+
+-   Oceanographical data can be downloaded from:
+
+Schwarzkopf, F. (2024). Supplementary data to Vinha et al. (2024): Ensemble modelling to 
+predict the distribution of Vulnerable Marine Ecosystems indicator taxa on data-limited 
+seamounts of Cabo Verde (NW Africa) [dataset]. GEOMAR Helmholtz Centre for Ocean Research 
+Kiel [distributor]. hdl:20.500.12085/20248b0a-49fd-4868-90bf-581c61f4b396
+
+**Reference to the study where data and code was used**
+
+Vinha,B., Murillo,F. J.,Schumacher,M., Hansteen,T. H.,Schwarzkopf,F. U.,
+Biastoch,A., Kenchington,E.,Piraino,S.,Orejas,C., & Huvenne,V. A. I.(2024).
+Ensemble modelling to predict the distribution of vulnerable marine ecosystems indicator 
+taxa on data-limited seamounts of Cabo Verde (NW Africa).Diversity and Distributions,
+00, e13896.https://doi.org/10.1111/ddi.13896
+
+# 1. Loading/preparing data
+## a. Species data 
+Species data corresponds to species PA/pixel in a 100 m resolution MB bathymetry grid for Cadamosto seamount. Presence-absence species data comes from analysis of ROV video data from two cruises: iMirabilis2 (2021) and GEOMAR Meteor M80/3 (2010). In this example, Acanella arbuscula is used as example. 
+
+```{r}
+species <- shapefile("Acanella_PA_CaboVerdeSeamounts.shp") 
+crs(species) <- crs("+proj=utm +zone=26 +ellps=WGS72 +units=m +no_defs")
+head(species)
+nrow(species) #165
+nrow(species[species$PA == "0",]) #138
+nrow(species[species$PA == "1",]) #27
+crs(species) #UTM 26N
+```
+
+## b. Predictors data
+Terrain variables were derived from a MB bathymetry grid at 100 m resolution, corresponding to the compilation of all the high-resolution MB data available for region. Slope, aspect (eastness and northness) and curvature (plan, profile and mean) were calculated using a multi-scale approach in R, with the Multiscale DTM R package (Ilich et al., 2021). Topographic Position Index (TPI) and Vector Ruggedness Measure (VRM) were calculated using the tpi and vrm function, respectively, of the spatialEco R Package. TPI was calculated at two different window sizes: fine TPI at 300 m and braod TPI at 1500 m.  Roughness and Terrain Ruggedness Index (TRI) were calculated with the terrain function from the raster R package. 
+Oceanographic data (bottom temperature, bottom salinity and bottom zonal (U) and meridional (V) current velocities) were retrieved from the Viking20x oceanographical model (Biastoch et al., 2021).  The dataset represents the monthly average of these variables for the period 2009-2019 for the "CapeVerde" region (26-21°W / 14-18°N), with an original resolution of 1/4°. 
+For SDMs, the final grid represents the calculated mean value of each variable for the overall time period. The grid was converted to GeoTiff, reprojected into UTM26N and downsampled to 100 m resolution. 
+```{r}
+depth <- raster ("00_Caboverde_bathy_100m_UTM26N.tif")
+slope_3x3 <- raster("01_Slope_3x3.tif")
+slope_9x9 <- raster("01_Slope_9x9.tif")
+slope_17x17 <- raster("01_Slope_17x17.tif")
+slope_33x33 <- raster("01_Slope_33x33.tif")
+eastness_3x3 <- raster("02_eastness_3x3.tif")
+eastness_9x9 <- raster("02_eastness_9x9.tif")
+eastness_17x17 <- raster("02_eastness_17x17.tif")
+eastness_33x33 <- raster("02_eastness_33x33.tif")
+northness_3x3 <- raster("03_northness_3x3.tif")
+northness_9x9 <- raster("03_northness_9x9.tif")
+northness_17x17 <- raster("03_northness_17x17.tif")
+northness_33x33 <- raster("03_northness_33x33.tif")
+profcurv_3x3 <- raster("04_profc_3x3.tif")
+profcurv_9x9 <- raster("04_profc_9x9.tif")
+profcurv_17x17 <- raster("04_profc_17x17.tif")
+profcurv_33x33 <- raster("04_profc_33x33.tif")
+plancurv_3x3 <- raster("05_planc_3x3.tif")
+plancurv_9x9 <- raster("05_planc_9x9.tif")
+plancurv_17x17 <- raster("05_planc_17x17.tif")
+plancurv_33x33 <- raster("05_planc_33x33.tif")
+meancurv_3x3 <- raster("06_meanc_3x3.tif")
+meancurv_9x9 <- raster("06_meanc_9x9.tif")
+meancurv_17x17 <- raster("06_meanc_17x17.tif")
+meancurv_33x33 <- raster("06_meanc_33x33.tif")
+finetpi_300m <- raster("07_ftpi_300m.tif")
+broadtpi_1500m <- raster("07_btpi_1500m.tif")
+roughness <- raster("08_roughness.tif")
+tri_3x3 <- raster("09_tri_3x3.tif")
+vrm_3x3 <- raster("10_vrm_3x3.tif")
+vrm_33x33 <- raster("10_vrm_33x33.tif")
+btemp <- raster("11_meanbT_utm26.tif")
+bsal <- raster("12_meanSal_utm26.tif")
+meanCs <- raster("15_meanCs_utm26.tif")
+```
+
+## c. Resample Oceanographical data
+```{r}
+#resample oceanographic data
+btemp <- resample(btemp, depth, method="bilinear")
+bsal <- resample(bsal, depth, method="bilinear")
+meanCs <- resample(meanCs, depth, method="bilinear")
+```
+
+## d. Add mask to data
+All variables were masked to only take into account Cadamosto seamount, with a depth mask from 2000 to 1400 m of depth, which corresponds to the depth interval that was sampled with the ROV dive. The models will be fitted taking account PA data for Cadamosto and then these models will be used to predict for the other 4 seamounts in Cabo Vede:
+The five seamounts are: Cadamosto, Nola, Senghor (Nova Holanda), Boavista and Cabo Verde.
+
+```{r}
+mask <- shapefile("Seamounts_mask_poly.shp") #load mask
+
+#add mask to all predictors layer
+depth <- mask(depth, mask)
+slope_3x3 <- mask(slope_3x3, mask)
+slope_9x9 <- mask(slope_9x9, mask)
+slope_17x17 <- mask(slope_17x17, mask)
+slope_33x33 <- mask(slope_33x33, mask)
+eastness_3x3 <- mask(eastness_3x3, mask)
+eastness_9x9 <- mask(eastness_9x9, mask)
+eastness_17x17 <- mask(eastness_17x17, mask)
+eastness_33x33 <- mask(eastness_33x33, mask)
+northness_3x3 <- mask(northness_3x3, mask)
+northness_9x9 <- mask(northness_9x9, mask)
+northness_17x17 <- mask(northness_17x17, mask)
+northness_33x33 <- mask(northness_33x33, mask)
+profcurv_3x3 <- mask(profcurv_3x3, mask)
+profcurv_9x9 <- mask(profcurv_9x9, mask)
+profcurv_17x17 <- mask(profcurv_17x17, mask)
+profcurv_33x33 <- mask(profcurv_33x33, mask)
+plancurv_3x3 <- mask(plancurv_3x3, mask)
+plancurv_9x9 <- mask(plancurv_9x9, mask)
+plancurv_17x17 <- mask(plancurv_17x17, mask)
+plancurv_33x33 <- mask(plancurv_33x33, mask)
+meancurv_3x3 <- mask(meancurv_3x3, mask)
+meancurv_9x9 <- mask(meancurv_9x9, mask)
+meancurv_17x17 <- mask(meancurv_17x17, mask)
+meancurv_33x33 <- mask(meancurv_33x33, mask)
+finetpi_300m <- mask(finetpi_300m, mask)
+broadtpi_1500m <- mask(broadtpi_1500m, mask)
+roughness <- mask(roughness, mask)
+tri_3x3 <- mask(tri_3x3, mask)
+vrm_3x3 <- mask(vrm_3x3, mask)
+vrm_33x33 <- mask(vrm_33x33, mask)
+btemp <- mask(btemp, mask)
+bsal <- mask(bsal, mask)
+meanCs <- mask(meanCs, mask)
+```
+
+## e. Create raster stack with predictors data
+```{r}
+preds <- stack(depth, slope_3x3, slope_9x9, slope_17x17, slope_33x33, 
+               eastness_3x3, eastness_9x9, eastness_17x17, eastness_33x33,
+               northness_3x3, northness_9x9, northness_17x17, northness_33x33,
+               profcurv_3x3, profcurv_9x9, profcurv_17x17, profcurv_33x33, 
+               plancurv_3x3, plancurv_9x9, plancurv_17x17, plancurv_33x33, 
+               meancurv_3x3, meancurv_9x9, meancurv_17x17, meancurv_33x33,
+               finetpi_300m, broadtpi_1500m, roughness,
+               tri_3x3, vrm_3x3, vrm_33x33, btemp, bsal, meanCs) 
+
+names(preds) <- c("Depth", "Slope 3x3", "Slope 9x9", "Slope 17x17", 
+                  "Slope 33x33", 
+                  "Eastness 3x3", "Eastness 9x9","Eastness 17x17","Eastness 33x33",
+                  "Northness 3x3", "Northness 9x9","Northness 17x17","Northness 33x33",
+                  "Profile Curvature 3x3", "Profile Curvature 9x9", 
+                  "Profile Curvature 17x17",  "Profile Curvature 33x33", 
+                  "Plan Curvature 3x3", "Plan Curvature 9x9", "Plan Curvature 17x17", 
+                  "Plan Curvature 33x33", "Mean Curvature 3x3", "Mean Curvature 9x9",
+                  "Mean Curvature 17x17",
+                  "Mean Curvature 33x33", "Fine TPI", "Broad TPI", "Roughness", "TRI",
+                  "VRM 3x3", "VRM 33x33",
+                  "btemp", "bsal", "meanCs")
+```
+
+## f. View data available on each seamount
+```{r}
+#define extent of each seamount
+nola_e <- extent(640000, 680000, 1880000, 1930000)
+cada_e <- extent(720000, 730000, 1618000, 1625000)
+senghor_e <- extent(1015000, 1060000, 1880000, 1930000)
+boavista_e <- extent(1010000, 1030000, 1730000, 1760000)
+cverde_e <- extent(1035000, 1070000, 1690000, 1710000)
+
+#crop raster stack according to each seamount extent
+nola_preds <- crop(preds, nola_e)
+cada_preds <- crop(preds, cada_e)
+senghor_preds <- crop(preds, senghor_e)
+boavista_preds <- crop(preds, boavista_e)
+cverde_preds <- crop(preds, cverde_e)
+```
+
+```{r}
+#View species presence/absence data available for Cadamosto
+par(mfrow=c(2,3))
+plot(nola_preds[[1]], main = "Nola")
+plot(species[species$PA == "0",], add=T, pch = 20, col = "blue") 
+plot(species[species$PA == "1",], add=T, pch = 20, col = "red")
+plot(cada_preds[[1]], main = "Cadamosto")
+plot(species[species$PA == "0",], add=T, pch = 20, col = "blue") 
+plot(species[species$PA == "1",], add=T, pch = 20, col = "red")
+plot(senghor_preds[[1]], main = "Senghor")
+plot(species[species$PA == "0",], add=T, pch = 20, col = "blue") 
+plot(species[species$PA == "1",], add=T, pch = 20, col = "red")
+plot(boavista_preds[[1]], main = "Boavista")
+plot(species[species$PA == "0",], add=T, pch = 20, col = "blue") 
+plot(species[species$PA == "1",], add=T, pch = 20, col = "red")
+plot(cverde_preds[[1]], main = "Cabo Verde")
+plot(species[species$PA == "0",], add=T, pch = 20, col = "blue") 
+plot(species[species$PA == "1",], add=T, pch = 20, col = "red")
+```
+
+## g. Prepare data and extract values from rasters
+```{r}
+species_df <- data.frame(species)
+env <- raster::extract(preds, species)
+data_xy <- na.omit(cbind(species_df[-c(2:5, 8:10)], env)) #bind species data with predictors
+data <- data_xy[-c(2,3)]
+data$PA <- as.numeric(data$PA)
+str(data)
+```
+
+# 2. Check collinearity between environmental variables
+## a. Check variable importance with a RF with all variables
+```{r}
+rf_varimp <-randomForest(as.factor(data$PA) ~ .,
+                         data=data, ntree = 500, importance = TRUE)
+varImpPlot(rf_varimp)
+```
+
+## b. Check Correlation between variables
+```{r}
+cormat <- cor(env,use="complete.obs")
+corrplot(cormat,method="circle",type="lower")
+```
+
+## c. Check VIF
+```{r}
+v <- vifstep(env)
+v
+```
+
+## d. Remove variables
+- Correlated variables: Mean.Curvature.3x3 Mean.Curvature.9x9 Mean.Curvature.17x17 Mean.Curvature.33x33 
+Broad.TPI Eastness.17x17 Northness.33x33 Slope.3x3 Fine.TPI VRM.33x33 Eastness.9x9 TRI Plan.Curvature.17x17 meanCs btemp Northness.9x9 Slope.17x17
+
+- VIF > 5: Depth 
+
+```{r}
+fit_preds1 <- dropLayer(preds, c("Mean.Curvature.3x3", "Mean.Curvature.9x9",
+                                 "Mean.Curvature.17x17", "Mean.Curvature.33x33",
+                                 "Broad.TPI", "Eastness.17x17", "Northness.33x33", "Slope.3x3", "Fine.TPI", "VRM.33x33",
+                                 "Eastness.9x9", "TRI", "Plan.Curvature.17x17", "meanCs", "Northness.9x9", "Slope.17x17",
+                                  "Depth", "btemp"))
+                
+env <- raster::extract(fit_preds1, species) 
+```
+
+
+## e. Final data for modelling
+Bind species data with final set of environmental variables
+```{r}
+data_xy <- na.omit(cbind(species_df[-c(2:5, 8:10)], env)) #bind species data with predictors
+data <- data_xy[-c(2,3)]
+data$PA <- as.numeric(data$PA)
+str(data)
+```
+
+## f. Boruta
+```{r}
+library(Boruta)
+boruta_sdm <- Boruta(as.factor(PA)~.,data=data)
+boruta_sdm
+```
+
+# 3. Model fit and validation with 5-fold cross validation
+Models were fitted and tested with 5-fold cross validation. In the split of folds, 
+an equal proportion of presences/absences was given to the train and test dataset, to
+account for class imbalance
+## a. GAM
+
+Variable selection for GAM was done using forward stepwise variable selection. For this procedure, we started with an empty model, and variables were added based on their statistical significance (p-value \< 0.05) until no more variables could be added without decreasing model performance. Model fit was then compared using the Akaike Information Criteria (AIC) score and the final set of variables, resulting in the lowest AIC and most parsimonious model, were used to fit the model.
+
+Run #summary(gam_folds) to check significance of each variable.
+
+```{r}
+set.seed(100)
+data_gam <- data_xy
+
+#Create Table to store evaluation metrics
+TableData_gam <- data.frame(Fold=character(),
+                        AIC=numeric(),
+                        threshold_train=numeric(),
+                        AUC_training=numeric(),
+                        AUC_testing=numeric(),
+                        Sensi_training=numeric(),
+                        Sensi_testing=numeric(),
+                        Spec_training=numeric(),
+                        Spec_testing=numeric(),
+                        TSS_training=numeric(),
+                        TSS_testing=numeric(),
+                        Kappa_training=numeric(),
+                        Kappa_testing=numeric(),
+                        threshold_test=numeric(),
+                        point_biserial_correlation=numeric(),
+                        stringsAsFactors=FALSE)
+
+#Sample training and testing data sets
+#data_gam$Group<-kfold(data_gam,k=5)
+
+#Create 5 folds
+folds <- caret::createFolds(data_gam$PA, k = 5, list = TRUE, returnTrain = TRUE)
+
+#Create list to store folds
+foldlist_gam<-vector(mode="list",length=5) #list to store models
+resids_gam<-vector(mode="list",length=5) #create vector to store model's residuals
+coords_train_gam<-vector(mode="list",length=5) #create vector to store coordinates
+training.data <- list()
+test.data <- list()
+
+
+#Loop through 5 folds 
+for(i in 1:5) {
+  #Divide dataset into test and train data
+  #training.data<-subset(data_gam,data_gam$Group!=i) 
+  #test.data<-subset(data_gam,data_gam$Group==i)
+
+  # Create folds accounting for class imbalance, i.e. with equal proportions of Presences and Absences
+  train_indices <- unlist(folds[i])
+  test_indices <- setdiff(seq_len(nrow(data_gam)), train_indices)
+  
+  #Subset the data based on the indices
+  training_data <- data_gam[train_indices, ]
+  test_data <- data_gam[test_indices, ]
+  
+  training.data[[i]] <- training_data
+  test.data[[i]] <- test_data #use sum(test.data[[1]]$PA == 0) to check number of 0s in testdata
+  
+  #Save coordinates training data
+  coords_train_gam[[i]]<-training.data[[i]][c(2,3)]
+
+  #####Fit Model#####
+  gam_folds <- gam(as.numeric(PA) ~  Eastness.33x33 + s(Profile.Curvature.9x9) + Plan.Curvature.9x9 +
+                     Plan.Curvature.33x33 + bsal,
+                   data = training.data[[i]], 
+                   family = binomial(link = "logit"), method = "REML",  select = TRUE) 
+  
+  foldlist_gam[[i]]<-gam_folds
+  names(foldlist_gam[i])<-paste0("gamFold",i)
+  
+  #####Test Model predictions using training dataset#####
+  TableData_gam[i+1,1]<-paste0("GAMFold_",i)
+  TableData_gam[i+1,2]<-gam_folds$aic
+  
+  ##Create dataframe (train_gam) with observed values and fitted values
+  train_gam <- data.frame(cbind(seq(1,length(as.numeric(as.character(gam_folds$y))),1),
+                   as.numeric(as.character(gam_folds$y)),
+                   as.numeric(as.character(gam_folds$fitted.values))))
+  
+  #Calculate model residuls for each fold run
+  resids_gam[[i]] <- train_gam$X2 - train_gam$X3 #observed - predicted
+  names(resids_gam[i])<-paste0("gamFold",i)
+  
+  #Define Threshold 
+  ##Using as threshold the one that maximizes Sens+Spec
+  train.thresholdf<-optimal.thresholds(train_gam, opt.methods=3) 
+  TableData_gam[i+1,3]<-train.thresholdf$X3 
+  #Calculate the AUC
+  TableData_gam[i+1,4]<-PresenceAbsence::auc(train_gam,na.rm=TRUE)
+  #Calculate Sensitivity
+  sensivity <- sensitivity(cmx(train_gam,threshold=train.thresholdf$X3))
+  TableData_gam[i+1,6] <- sensivity
+  #Calculate Sensitivity
+  specificity <- specificity(cmx(train_gam,threshold=train.thresholdf$X3))
+  TableData_gam[i+1,8] <- specificity
+  #Calculate TSS
+  TableData_gam[i+1,10] <- sensivity + specificity -1
+  #Calculate Kappa
+  kappa <- kappa(cmx(train_gam,threshold=train.thresholdf$X3))
+  TableData_gam[i+1,12] <- as.numeric(kappa$coef) 
+  
+  #####Test Model predictions using testing dataset#####
+  
+  ##generate predictions using test data
+  pred<-predict(gam_folds,newdata=test.data[[i]],type="response") 
+  
+  ##Create dataframe (test_gam) with observed values and predicted values
+  test_gam<- data.frame(cbind(seq(1,length(as.numeric(test.data[[i]]$PA)),1),
+                                    as.numeric(as.character(test.data[[i]]$PA)),
+                                    as.numeric(as.character(pred))))
+  
+  #Define Threshold 
+  test.thresholdf<-optimal.thresholds(test_gam, opt.methods=3) 
+  TableData_gam[i+1,14]<-test.thresholdf$X3
+  
+  #if predictions > threshold are presences
+  test_gam$X3[which(test_gam$X3 >= test.thresholdf$X3)] = 1  
+  #predictions < threshold are absences
+  test_gam$X3[which(test_gam$X3 < test.thresholdf$X3)] = 0  
+  
+  #Calculate the AUC
+  TableData_gam[i+1,5]<-PresenceAbsence::auc(test_gam,na.rm=TRUE)
+  #Calculate Sensitivity
+  sensivity <- sensitivity(cmx(test_gam,threshold=test.thresholdf$X3))
+  TableData_gam[i+1,7] <- sensivity
+  #Calculate Sensitivity
+  specificity <- specificity(cmx(test_gam,threshold=test.thresholdf$X3))
+  TableData_gam[i+1,9] <- specificity
+  #Calculate TSS
+  TableData_gam[i+1,11] <- sensivity + specificity -1
+  #Calculate Kappa
+  kappa <- kappa(cmx(test_gam,threshold=test.thresholdf$X3))
+  TableData_gam[i+1,13] <- as.numeric(kappa$coef) 
+  #Calculate Point Biserial Correlation
+  point_biserial_correlation <- cor.test(test_gam$X3, test_gam$X2)
+  TableData_gam[i+1,15] <- as.numeric(point_biserial_correlation$estimate)
+}
+
+TableData_gam <- na.omit(TableData_gam)
+
+#Summarize results as mean and standard deviation across folds
+gam_performance <- data.frame(AIC_mean=mean(TableData_gam$AIC),
+                              AIC_sd=sd(TableData_gam$AIC),
+                              AUC_mean=mean(TableData_gam$AUC_testing),
+                              AUC_sd=sd(TableData_gam$AUC_testing),
+                              Sensivity_mean=mean(TableData_gam$Sensi_testing),
+                              Sensivity_sd=sd(TableData_gam$Sensi_testing),
+                              Specificity_mean=mean(TableData_gam$Spec_testing),
+                              Specificity_sd=sd(TableData_gam$Spec_testing),
+                              TSS_mean=mean(TableData_gam$TSS_testing),
+                              TSS_sd=sd(TableData_gam$TSS_testing),
+                              kappa_mean=mean(TableData_gam$Kappa_testing),
+                              kappa_sd=sd(TableData_gam$Kappa_testing),
+                              pointBiserialCor_mean=mean(TableData_gam$point_biserial_correlation),
+                              pointBiserialCor_sd=sd(TableData_gam$point_biserial_correlation),
+                              stringsAsFactors=FALSE)
+gam_performance
+```
+
+```{r}
+par(mfrow=c(2,3))
+plot(gam_folds, residuals = TRUE, rug = TRUE, shade = TRUE, scale = 0)
+
+summary(gam_folds)
+```
+
+## b. Random Forest
+```{r}
+#Find out best tunned parameters
+set.seed(100)
+#drop unimportant variables from Boruta  Slope.9x9, Northness.3x3, Northness.17x17, Plan.Curvature.3x3, Plan.Curvature.9x9, Profile.Curvature.3x3, VRM.3x3
+
+data_rf <- data_xy[-c(4,8,9,10,14,15,17,18)]
+
+data_rf$PA <- as.integer(data_rf$PA)
+
+mtry <- tuneRF(data_rf[-1],data_rf$PA, stepFactor=1.5, doBest=TRUE)
+mtry
+```
+
+
+```{r}
+set.seed(100)
+#Create Table to store evaluation metrics
+TableData_rf <- data.frame(Fold=character(),
+                            threshold_train=numeric(),
+                            AUC_training=numeric(),
+                            AUC_testing=numeric(),
+                            Sensi_training=numeric(),
+                            Sensi_testing=numeric(),
+                            Spec_training=numeric(),
+                            Spec_testing=numeric(),
+                            TSS_training=numeric(),
+                            TSS_testing=numeric(),
+                            Kappa_training=numeric(),
+                            Kappa_testing=numeric(),
+                            threshold_test=numeric(),
+                            point_biserial_correlation=numeric(),
+                            stringsAsFactors=FALSE)
+
+#Sample training and testing data sets
+#data_rf$Group<-kfold(data_rf,k=10)
+folds <- caret::createFolds(data_rf$PA, k = 5, list = TRUE, returnTrain = TRUE)
+
+foldlist_rf<-vector(mode="list",length=5)
+resids_rf<-vector(mode="list",length=5) #create vector to store model's residuals
+coords_train_rf <-vector(mode="list",length=5) #create vector to store coordinates
+training.data <- list()
+test.data <- list()
+
+#Loop through 5 folds 
+for(i in 1:5) {
+  #Divide dataset into test and train data
+  #training.data<-subset(data_rf,data_rf$Group!=i)
+  #test.data<-subset(data_rf,data_rf$Group==i)
+  
+  # Create folds accounting for class imbalance, i.e. with equal proportions of Presences and Absences
+  train_indices <- unlist(folds[i])
+  test_indices <- setdiff(seq_len(nrow(data_rf)), train_indices)
+  
+  #Subset the data based on the indices
+  training_data <- data_rf[train_indices, ]
+  test_data <- data_rf[test_indices, ]
+  
+  training.data[[i]] <- training_data
+  test.data[[i]] <- test_data #use sum(test.data[[1]]$PA == 0) to check number of 0s in testdata
+  
+  #Save coordinates training data
+  coords_train_rf[[i]]<-training.data[[i]][c(2,3)]
+  
+  #####Fit Model#####
+  rf_folds<-randomForest(training.data[[i]]$PA ~ Slope.33x33 + Eastness.3x3 +
+                           Eastness.33x33 + Profile.Curvature.9x9 + Profile.Curvature.17x17 +
+                           Profile.Curvature.33x33 + Plan.Curvature.33x33 + bsal,
+                         data=training.data[[i]], ntree = 500, mtry = 4, importance = TRUE, type="prob")
+  foldlist_rf[[i]]<-rf_folds
+  names(foldlist_rf[i])<-paste0("rfFold",i)
+
+  #####Test Model predictions using training dataset#####
+  TableData_rf[i+1,1]<-paste0("RFFold_",i)
+  
+  ##Create dataframe (train_rf) with observed values and fitted values
+  train_rf<-data.frame(cbind(seq(1,length(as.numeric(as.character(rf_folds$y))),1),
+                                  as.numeric(as.character(rf_folds$y)),
+                                  as.numeric(as.character(rf_folds$predicted))))
+  
+   #Calculate model residuls for each fold run
+  resids_rf[[i]] <- train_rf$X2 - train_rf$X3 #observed - predicted
+  names(resids_rf[i])<-paste0("rfFold",i)
+
+  #Define Threshold 
+  train.thresholdf_rf<-optimal.thresholds(train_rf, opt.methods=3) 
+  TableData_rf[i+1,2]<-train.thresholdf_rf$X3
+  
+  #Calculate the AUC
+  TableData_rf[i+1,3]<-PresenceAbsence::auc(train_rf,na.rm=TRUE)
+  #Calculate Sensitivity
+  sensivity <- sensitivity(cmx(train_rf,threshold=train.thresholdf_rf$X3))
+  TableData_rf[i+1,5] <- sensivity
+  #Calculate Sensitivity
+  specificity <- specificity(cmx(train_rf,threshold=train.thresholdf_rf$X3))
+  TableData_rf[i+1,7] <- specificity
+  #Calculate TSS
+  TableData_rf[i+1,9] <- sensivity + specificity -1
+  #Calculate Kappa
+  kappa <- kappa(cmx(train_rf,threshold=train.thresholdf_rf$X3))
+  TableData_rf[i+1,11] <- as.numeric(kappa$coef) 
+  
+  #####Test Model predictions using testing dataset#####
+
+  ##generate predictions using test data
+  rffolds_pred <- predict(rf_folds, test.data[[i]][-c(2,3)], type="response")
+  
+  ##Create dataframe (test_rf) with observed values and predicted values
+  test_rf <- data.frame(cbind(seq(1,length(as.numeric(test.data[[i]]$PA)),1),
+                              as.numeric(as.character(test.data[[i]]$PA)),
+                              as.numeric(as.character(rffolds_pred))))
+  
+  #Define Threshold 
+  test.thresholdf_rf<-optimal.thresholds(test_rf, opt.methods=2) 
+  TableData_rf[i+1,13]<-test.thresholdf_rf$X3
+  
+  #if predictions > threshold are presences
+  rffolds_pred[which(rffolds_pred >= test.thresholdf_rf$X3)] = 1  
+  #if predictions < threshold are absences
+  rffolds_pred[which(rffolds_pred < test.thresholdf_rf$X3)] = 0  
+
+  #Calculate the AUC
+  TableData_rf[i+1,4]<-PresenceAbsence::auc(test_rf,na.rm=TRUE)
+  #Calculate Sensitivity
+  sensivity <- sensitivity(cmx(test_rf,threshold=test.thresholdf_rf$X3))
+  TableData_rf[i+1,6] <- sensivity
+  #Calculate Sensitivity
+  specificity <- specificity(cmx(test_rf,threshold=test.thresholdf_rf$X3))
+  TableData_rf[i+1,8] <- specificity
+  #Calculate TSS
+  TableData_rf[i+1,10] <- sensivity + specificity -1
+  #Calculate Kappa
+  kappa <- kappa(cmx(test_rf,threshold=test.thresholdf_rf$X3))
+  TableData_rf[i+1,12] <- as.numeric(kappa$coef) 
+  #Calculate Point Biserial correlation
+  point_biserial_correlation <- cor.test(as.numeric(test_rf$X3), as.numeric(test.data[[i]]$PA))
+  TableData_rf[i+1,14] <- as.numeric(point_biserial_correlation$estimate)
+}
+
+TableData_rf <- na.omit(TableData_rf)
+
+#Summarize results as mean and standard deviation across folds
+rf_performance <- data.frame(AUC_mean=mean(TableData_rf$AUC_testing),
+                              AUC_sd=sd(TableData_rf$AUC_testing),
+                              Sensivity_mean=mean(TableData_rf$Sensi_testing),
+                              Sensivity_sd=sd(TableData_rf$Sensi_testing),
+                              Specificity_mean=mean(TableData_rf$Spec_testing),
+                              Specificity_sd=sd(TableData_rf$Spec_testing),
+                              TSS_mean=mean(TableData_rf$TSS_testing),
+                              TSS_sd=sd(TableData_rf$TSS_testing),
+                              kappa_mean=mean(TableData_rf$Kappa_testing),
+                              kappa_sd=sd(TableData_rf$Kappa_testing),
+                              pointBiserialCor_mean=mean(TableData_rf$point_biserial_correlation),
+                              pointBiserialCor_sd=sd(TableData_rf$point_biserial_correlation),
+                              threshold_mean=mean(TableData_rf$threshold_test),
+                              threshold_sd_=sd(TableData_rf$threshold_test),
+                              stringsAsFactors=FALSE)
+rf_performance
+```
+
+```{r}
+plot(rf_folds)
+varImpPlot(rf_folds)
+#partialPlot(foldlist_rf[[2]], training.data, Slope.3x3)
+```
+
+# 4. Measure Spatial Autocorrelation in model's residuals
+Here we use Moran's Index to evaluate the extent of SAC in GAM's model residuals.
+
+```{r}
+set.seed(100)
+Table_SAC <- data.frame(Fold=character(),
+                        Moran_I_stats=numeric(),
+                        p_value=numeric(),
+                        stringsAsFactors=FALSE)
+
+MoranI_gam_folds <- list()
+
+for(i in 1:5) {
+  #Extract coordinates
+  data_traingamxy <- coords_train_gam[[i]] #change number of fold
+  data_traingamxy_sf <- st_as_sf(data_traingamxy, coords = c("x", "y"))
+  st_crs(data_traingamxy_sf) <- "+proj=utm +zone=26 +ellps=WGS72 +units=m +no_defs"
+  
+  #Neighbourhood list for closest nearest neighbour k=2
+  kNeigh <- knn2nb(knearneigh(cbind(data_traingamxy$x, data_traingamxy$y), k=2))
+  #Get distance that ensures each point has at least one neighbour
+  neighDist <- max(unlist(nbdists(kNeigh,cbind(data_traingamxy$x, data_traingamxy$y))))
+  #Define neighbours (within maximum distance)
+  dNeigh <- dnearneigh(data_traingamxy_sf, d1=0, d2=neighDist)
+  #Neighbour weights with binary coding
+  listWeights <- nb2listw(dNeigh, style="B")
+
+  #calculate Moran's I for gam
+  MoranI_gam <- moran.test(resids_gam[[i]], listWeights, randomisation=TRUE,
+                         zero.policy=TRUE, na.action=na.omit)
+
+  MoranI_gam_folds[[i]] <- MoranI_gam #Moran's Index for each model fold stored here 
+  
+  Table_SAC[i,1]<-paste0("Fold_",i)
+  
+  Table_SAC[i,2] <- MoranI_gam_folds[[i]]$statistic 
+  
+  Table_SAC[i,3] <- MoranI_gam_folds[[i]]$p.value  
+}
+
+#Summarize results
+Table_SAC_sum <- data.frame(Moran_I_stats_mean=mean(Table_SAC$Moran_I_stats),
+                            Moran_I_stats_sd=sd(Table_SAC$Moran_I_stats),
+                            p_value_mean=mean(Table_SAC$p_value),
+                            p_value_sd=sd(Table_SAC$p_value),
+                            stringsAsFactors=FALSE)
+Table_SAC_sum
+```
+
+```{r}
+set.seed(100)
+Table_SAC <- data.frame(Fold=character(),
+                        Moran_I_stats=numeric(),
+                        p_value=numeric(),
+                        stringsAsFactors=FALSE)
+
+MoranI_rf_folds <- list()
+
+for(i in 1:5) {
+  #Extract coordinates
+  data_trainrfxy <- coords_train_rf[[i]] #change number of fold
+  data_trainrfxy_sf <- st_as_sf(data_trainrfxy, coords = c("x", "y"))
+  st_crs(data_trainrfxy_sf) <- "+proj=utm +zone=26 +ellps=WGS72 +units=m +no_defs"
+  
+  #Neighbourhood list for closest nearest neighbour k=2
+  kNeigh <- knn2nb(knearneigh(cbind(data_trainrfxy$x, data_trainrfxy$y), k=2))
+  #Get distance that ensures each point has at least one neighbour
+  neighDist <- max(unlist(nbdists(kNeigh,cbind(data_trainrfxy$x, data_trainrfxy$y))))
+  #Define neighbours (within maximum distance)
+  dNeigh <- dnearneigh(data_trainrfxy_sf, d1=0, d2=neighDist)
+  #Neighbour weights with binary coding
+  listWeights <- nb2listw(dNeigh, style="B")
+
+  #calculate Moran's I for gam
+  MoranI_rf <- moran.test(resids_rf[[i]], listWeights, randomisation=TRUE,
+                         zero.policy=TRUE, na.action=na.omit)
+
+  MoranI_rf_folds[[i]] <- MoranI_rf #Moran's Index for each model fold stored here 
+  
+  Table_SAC[i,1]<-paste0("Fold_",i)
+  
+  Table_SAC[i,2] <- MoranI_rf_folds[[i]]$statistic 
+  
+  Table_SAC[i,3] <- MoranI_rf_folds[[i]]$p.value  
+}
+
+#Summarize results
+Table_SAC_sum <- data.frame(Moran_I_stats_mean=mean(Table_SAC$Moran_I_stats),
+                            Moran_I_stats_sd=sd(Table_SAC$Moran_I_stats),
+                            p_value_mean=mean(Table_SAC$p_value),
+                            p_value_sd=sd(Table_SAC$p_value),
+                            stringsAsFactors=FALSE)
+Table_SAC_sum
+```
+Moran's Index indicates that there is not significant SAC in the model's residuals.
+
+# 5. Model Predictions
+
+Models will be predicted to the whole spatial extent used for modelling (i.e. the five seamounts) across the 10 folds, meaning that a total of 10 predictions will be generated. For each modelling technique, the final model output corresponds to the mean probability of presence across folds and model uncertainty corresponds to the standard deviation between folds.
+
+## a. Random Forest
+
+```{r}
+pred_rf <- vector(mode="list",length=5)
+for(i in 1:5) {
+  pred_rf[[i]] <- raster::predict(preds, foldlist_rf[[i]], type='response')
+}
+
+pred_rf_stack <- stack(pred_rf[[1]], pred_rf[[2]], pred_rf[[3]],
+                       pred_rf[[4]], pred_rf[[5]])
+
+pred_rf_mean <- raster::calc(pred_rf_stack, mean)
+pred_rf_sd <- raster::calc(pred_rf_stack, fun=sd)
+```
+
+
+## b. GAM
+
+```{r}
+pred_gam <- vector(mode="list",length=5)
+
+for(i in 1:5) {
+  pred_gam[[i]] <- raster::predict(preds, foldlist_gam[[i]], type='response') 
+}
+
+pred_gam_stack <- stack(pred_gam[[1]], pred_gam[[2]], pred_gam[[3]], pred_gam[[4]],
+                        pred_gam[[5]])
+
+pred_gam_mean <- raster::calc(pred_gam_stack, mean)
+pred_gam_sd <- raster::calc(pred_gam_stack, fun=sd)
+```
+
+
+# 6. Ensemble model with RF and GAM
+## a. Calculate the weighted average
+
+Weighted average will be calculated considering the AUC of predictions of each modelling technique, taking into account the prediction obtained at each fold. This means that a total of 30 model predictions will be considered for the final ensemble model output.
+
+```{r}
+#library(sdmvspecies)
+results.AUC_fold <- data.frame('RF' = TableData_rf$AUC_testing,
+                               'GAM' = TableData_gam$AUC_testing) 
+
+ensemble_folds <- stack(pred_gam_stack, pred_rf_stack)
+names(ensemble_folds) <- c("RF_fold1", "RF_fold2", "RF_fold3", "RF_fold4", "RF_fold5",
+                           "GAM_fold1", "GAM_fold2", "GAM_fold3", "GAM_fold4", "GAM_fold5")
+                           
+#Re-scale AUC ranging from 0.5 to 1 -> 0 to 1
+#Because AUC=0.5 is no better than random so weighting should be zero
+auc_folds <- results.AUC_fold
+w <- (auc_folds - 0.5)*2
+w[w < 0] <- 0
+
+#Convert weights so they sum to 1
+stats <- unlist(w) 
+weights <- stats/sum(stats) 
+# Multiply rasters by weighting
+weighted_stack <- ensemble_folds*weights
+#Calculate weighted mean
+meanPred <- sum(weighted_stack, na.rm=T) #FINAL ENSEMBLE MODEL
+ensemble_model <- mask(meanPred, mask) #mask final ensemble output with the seamounts extent
+```
+
+## b. Map uncertainty of the ensemble Model
+
+Calculate the coefficient of variation between the different model predictions as a way to map the uncertainity of the ensemble model.
+
+```{r}
+CV.ense <- calc(ensemble_folds, fun=sd)/mean(ensemble_folds)
+```
+
+## c. Validate the ensemble model using 5-fold Crossvalidation
+
+Data used for modelling will be divided 5 times into train/test to obtain the evaluation metrics of the ensemble model.
+
+```{r}
+set.seed(100)
+data_ensemb <- data_xy
+
+#Create Table to store evaluation metrics
+TableData_ensemble <- data.frame(Fold=character(), #1
+                            AUC_testing=numeric(), #2
+                            Sensi_testing=numeric(), #3
+                            Spec_testing=numeric(), #4
+                            TSS_testing=numeric(), #5
+                            Kappa_testing=numeric(), #6
+                            threshold_test=numeric(), #7
+                            point_biserial_correlation_test=numeric(), #8
+                            stringsAsFactors=FALSE) 
+
+#data_ensemb$Group<-kfold(data_ensemb,k=5)
+folds <- caret::createFolds(data_ensemb$PA, k = 5, list = TRUE, returnTrain = TRUE)
+
+#foldlist_rf<-vector(mode="list",length=5)
+training.data <- list()
+test.data <- list()
+
+#Loop through 10 folds 
+for(i in 1:5) {
+  #Divide dataset into test and train data
+  ###training.data<-subset(data_ensemb,data_ensemb$Group!=i)
+  ###test.data<-subset(data_ensemb,data_ensemb$Group==i)
+  
+  ### Create folds accounting for class imbalance, i.e. with equal proportions of Presences and Absences
+  train_indices <- unlist(folds[i])
+  test_indices <- setdiff(seq_len(nrow(data_ensemb)), train_indices)
+  
+  #Subset the data based on the indices
+  training_data <- data_ensemb[train_indices, ]
+  test_data <- data_ensemb[test_indices, ]
+  
+  training.data[[i]] <- training_data
+  test.data[[i]] <- test_data #use sum(test.data[[1]]$PA == 0) to check number of 0s in testdata
+  
+  ####
+  TableData_ensemble[i+1,1]<-paste0("Fold_",i)
+  
+   #####Test Model predictions using training dataset#####
+  
+  #extract the predicted values obtained by the ensemble model at the same locations of the train data
+  #this will allow to compare the predicted values against the real values at the same location
+  #ensemb_train_pred <- raster::extract(ensemble_model, training.data[[i]][c(2, 3)]) 
+  
+  #train_ensemble<- data.frame(cbind(seq(1,length(as.numeric(training.data[[i]]$PA)),1), #number of rows
+                          #    as.numeric(as.character(training.data[[i]]$PA)), #observed
+                           #   as.numeric(as.character(ensemb_train_pred)))) #predicted by ensemble
+    
+  #train.thresholdf_ensm<-optimal.thresholds(train_ensemble, opt.methods=3) 
+  #TableData_ensemble[i+1,13]<-train.thresholdf_ensm$X3
+  
+  #ensemb_train_pred[which(ensemb_train_pred >= train.thresholdf_ensm$X3)] = 1  #predictions > threshold are presences
+  #ensemb_train_pred[which(ensemb_train_pred < train.thresholdf_ensm$X3)] = 0  #predictions < threshold are absences
+  
+  #Calculate the AUC
+  #TableData_ensemble[i+1,8]<-PresenceAbsence::auc(train_ensemble,na.rm=TRUE)
+  #Calculate Sensitivity
+  #sensivity <- sensitivity(cmx(train_ensemble,threshold=train.thresholdf$X3))
+  #TableData_ensemble[i+1,9] <- sensivity
+  ## Calculate Sensitivity
+  #specificity <- specificity(cmx(train_ensemble,threshold=train.thresholdf$X3))
+  #TableData_ensemble[i+1,10] <- specificity
+  ## Calculate TSS
+  #TableData_ensemble[i+1,11] <- sensivity + specificity -1
+  ## Calculate Kappa
+  #kappa <- kappa(cmx(train_ensemble,threshold=train.thresholdf$X3))
+  #TableData_ensemble[i+1,12] <- as.numeric(kappa$coef) 
+  
+   #####Test Model predictions using testing dataset#####
+  
+   #Extract predicted values at location of test observations
+  ensemb_test_pred <- raster::extract(ensemble_model, test.data[[i]][c(2,3)]) 
+  
+  test_ensemble<- data.frame(cbind(seq(1,length(as.numeric(test.data[[i]]$PA)),1), #number of rows
+                              as.numeric(as.character(test.data[[i]]$PA)), #observed
+                              as.numeric(as.character(ensemb_test_pred)))) #predicted by ensemble
+  
+  ## Define Threshold 
+  test.thresholdf_ensm<-optimal.thresholds(test_ensemble, opt.methods=3) 
+  TableData_ensemble[i+1,7]<-test.thresholdf_ensm$X3
+  
+  ensemb_test_pred[which(ensemb_test_pred >= test.thresholdf_ensm$X3)] = 1  #predictions > threshold are presences
+  ensemb_test_pred[which(ensemb_test_pred < test.thresholdf_ensm$X3)] = 0  #predictions < threshold are absences
+
+  #Calculate the AUC
+  TableData_ensemble[i+1,2]<-PresenceAbsence::auc(test_ensemble,na.rm=TRUE)
+  #Calculate Sensitivity
+  sensivity <- sensitivity(cmx(test_ensemble,threshold=test.thresholdf_ensm$X3))
+  TableData_ensemble[i+1,3] <- sensivity
+  #Calculate Sensitivity
+  specificity <- specificity(cmx(test_ensemble,threshold=test.thresholdf_ensm$X3))
+  TableData_ensemble[i+1,4] <- specificity
+  #Calculate TSS
+  TableData_ensemble[i+1,5] <- sensivity + specificity -1
+  #Calculate Kappa
+  kappa <- kappa(cmx(test_ensemble,threshold=test.thresholdf_ensm$X3))
+  TableData_ensemble[i+1,6] <- as.numeric(kappa$coef) 
+  #Calculate Point Biserial Correlation
+  point_biserial_correlation <- cor.test(test_ensemble$X3, test_ensemble$X2)
+  TableData_ensemble[i+1,8] <- as.numeric(point_biserial_correlation$estimate)
+}
+
+TableData_ensemble <- na.omit(TableData_ensemble)
+
+#Summarize results as mean and standard deviation across folds
+ensemble_performance <- data.frame(AUC_mean=mean(TableData_ensemble$AUC_testing),
+                              AUC_sd=sd(TableData_ensemble$AUC_testing),
+                              Sensivity_mean=mean(TableData_ensemble$Sensi_testing),
+                              Sensivity_sd=sd(TableData_ensemble$Sensi_testing),
+                              Specificity_mean=mean(TableData_ensemble$Spec_testing),
+                              Specificity_sd=sd(TableData_ensemble$Spec_testing),
+                              TSS_mean=mean(TableData_ensemble$TSS_testing),
+                              TSS_sd=sd(TableData_ensemble$TSS_testing),
+                              kappa_mean=mean(TableData_ensemble$Kappa_testing),
+                              kappa_sd=sd(TableData_ensemble$Kappa_testing),
+                              pointBiserialCor_mean=mean(TableData_ensemble$point_biserial_correlation),
+                              pointBiserialCor_sd=sd(TableData_ensemble$point_biserial_correlation),
+                              stringsAsFactors=FALSE)
+ensemble_performance
+```
+
+
+# 7. Create categorical/binary maps based on threshold values
+
+```{r}
+#calculate mean threshold value
+thres_rf_mean <- mean(TableData_rf$threshold_test)
+thres_rf_mean <- c(0, thres_rf_mean, 0, thres_rf_mean, 1, 1) 
+thres_rf_mean_m <- matrix(thres_rf_mean, ncol = 3, byrow=TRUE)
+
+thres_gam_mean <- mean(TableData_gam$threshold_test)
+thres_gam_mean <- c(0, thres_gam_mean, 0, thres_gam_mean, 1, 1) 
+thres_gam_mean_m <- matrix(thres_gam_mean, ncol = 3, byrow=TRUE)
+
+thres_ensemble_mean <- mean(TableData_ensemble$threshold_test)
+thres_ensemble_mean <- c(0, thres_ensemble_mean, 0, thres_ensemble_mean, 1, 1) 
+thres_ensemble_mean_m <- matrix(thres_ensemble_mean, ncol = 3, byrow=TRUE)
+
+#thre_cat <- mean(thres_rf_mean, thres_gam_mean, thres_ensemble_mean) 
+```
+
+```{r}
+#Create matrix with the threshold value
+#threshold_cat <- c(0, thre_cat, 0, thre_cat, 1, 1) 
+#threshold_m <- matrix(threshold_cat, ncol = 3, byrow=TRUE)
+rf_class_map <- raster::reclassify(pred_rf_mean, thres_rf_mean_m, include.lowest=TRUE)
+gam_class_map <- raster::reclassify(pred_gam_mean, thres_gam_mean_m, include.lowest=TRUE)
+ensemble_class_map <- raster::reclassify(ensemble_model, thres_ensemble_mean_m, include.lowest=TRUE)
+```
+
+# 8. Check Extrapolated Areas
+Following Bouchet et al., 2020
+https://github.com/densitymodelling/dsmextra
+```{r}
+enallo_sampling <- data
+
+#define coordinate system
+enallo_crs <- sp::CRS("+proj=utm +zone=26 +ellps=WGS72 +units=m +no_defs")
+
+# Define environmental covariates of interest
+enallo_covariates <- c("Slope.9x9", "Slope.33x33","Eastness.3x3", "Eastness.33x33", "Northness.3x3",
+                       "Northness.17x17", "Profile.Curvature.9x9", "Profile.Curvature.17x17",
+                       "Profile.Curvature.33x33", "Plan.Curvature.9x9", "Plan.Curvature.33x33",
+                       "bsal")
+
+#Prediction grid for RF
+colnames(pred_rf_mean_df) <- c("x","y","Predictions")  #change names
+xy_rf_pred <- pred_rf_mean_df[c(1,2)] #extract xy 
+env_pred_rf <- raster::extract(preds, xy_rf_pred)
+env_pred_rf_xy <- data.frame(cbind(xy_rf_pred, env_pred_rf))
+```
+
+##Compute extrapolation
+```{r}
+library(dsmextra)
+enallopsammia.extrapolation_rf <- compute_extrapolation(samples = enallo_sampling,
+                                      covariate.names = enallo_covariates,
+                                      prediction.grid = env_pred_rf_xy,
+                                      coordinate.system = enallo_crs)
+
+summary(enallopsammia.extrapolation_rf)
+```
+
+## Compare covariates
+```{r}
+enallo_extra_compcov <- compare_covariates(extrapolation.type = "both",
+                   extrapolation.object = enallopsammia.extrapolation_rf,
+                   n.covariates = NULL,
+                   create.plots = TRUE,
+                   display.percent = TRUE)
+```
+
+##Compute nearby distances
+```{r}
+enallo_nearby_rf <- compute_nearby(samples = enallo_sampling,
+                                    prediction.grid = env_pred_rf_xy,
+                                    coordinate.system = enallo_crs,
+                                     covariate.names =  enallo_covariates,
+                                    nearby = 1)
+```
+
+```{r}
+##View extrapolatiion
+rf_extrapo <- map_extrapolation(map.type = "extrapolation",
+                  extrapolation.object = enallopsammia.extrapolation_rf)
+```
+
+## Extract rasters
+```{r}
+rf_extrapo_rast_extdet_uni <- enallopsammia.extrapolation_rf$rasters$ExDet$univariate
+rf_extrapo_rast_extdet_combi <- enallopsammia.extrapolation_rf$rasters$ExDet$combinatorial
+
+writeRaster(rf_extrapo_rast_extdet_uni, "NEWEnallo_EXTRAPOLA_extdet_uni_SDM2") 
+writeRaster(rf_extrapo_rast_extdet_combi, "NEWEnallo_EXTRAPOLA_extdet_combi_SDM2") 
+```
+
+# 9. Relative Variable importance
+As in BIOMOD, following: http://www.will.chez-alice.fr/pdf/BiomodTutorial.pdf
+
+A standard prediction is made and then one of the variables is randomized and a new prediction is made. The correlation score between the new prediction and the standard prediction is calculated and is considered to give an estimation of the variable importance of the model. 
+- Good correlation score between two predictions (i.e. they only slighly differ) shows that the randomized variable has little importance on the prediction and is considered not important for the model
+- Low correlation score shows an importance of that variable for the model.
+
+VarImporance from 0 to 1
+Score of Var1 (pred2) = 1 - cor(Pred, Pred2)
+##a. GAM
+
+```{r}
+#### Standard prediction#### 
+var_gam <- data_gam[c("Eastness.33x33", "Profile.Curvature.9x9", "Plan.Curvature.9x9",
+                      "Plan.Curvature.33x33", "bsal")]
+
+#standard prediction = pred_gam_mean_df
+pred_gam_std <- vector(mode="list",length=5)
+# loop version 2
+for(i in 1:5) {
+  pred_gam_std[[i]] <-predict(foldlist_gam[[i]], var_gam, type="response")
+  #pred_gam_std_mean <- apply(pred_gam_std[[i]], c(1), mean)
+}
+
+#### Eastness.33x33 #### 
+var_gam1 <- var_gam
+var_gam1[,'Eastness.33x33'] <- sample(var_gam[,'Eastness.33x33'])
+
+pred_gam1 <- vector(mode="list",length=5)
+East33Imp_gam <- vector(mode="list",length=5)
+# loop version 2
+for(i in 1:5) {
+  pred_gam1[[i]] <-predict(foldlist_gam[[i]], var_gam1, type="response")
+  #pred_gam1_mean <- apply(pred_gam1[[i]], c(1), mean)
+  East33Imp_gam[[i]] <- 1 - cor(pred_gam_std[[i]], pred_gam1[[i]])
+}
+
+East33Imp_gam_mean <- mean(unlist(East33Imp_gam))
+East33Imp_gam_sd <- sd(unlist(East33Imp_gam))
+
+
+####  Profile.Curvature.9x9 #### 
+var_gam2 <- var_gam
+var_gam2[,'Profile.Curvature.9x9'] <- sample(var_gam[,'Profile.Curvature.9x9'])
+
+pred_gam2 <- vector(mode="list",length=5)
+ProfCurv9Imp_gam <- vector(mode="list",length=5)
+# loop version 2
+for(i in 1:5) {
+  pred_gam2[[i]] <-predict(foldlist_gam[[i]], var_gam2, type="response")
+  #pred_gam1_mean <- apply(pred_gam1[[i]], c(1), mean)
+  ProfCurv9Imp_gam[[i]] <- 1 - cor(pred_gam_std[[i]], pred_gam2[[i]])
+}
+
+ProfCurv9Imp_gam_mean <- mean(unlist(ProfCurv9Imp_gam))
+ProfCurv9Imp_gam_sd <- sd(unlist(ProfCurv9Imp_gam))
+
+#### Plan.Curvature.9x9 ####
+var_gam3 <- var_gam
+var_gam3[,'Plan.Curvature.9x9'] <- sample(var_gam[,'Plan.Curvature.9x9'])
+
+pred_gam3 <- vector(mode="list",length=5)
+PlanCurv9Imp_gam <- vector(mode="list",length=5)
+# loop version 2
+for(i in 1:5) {
+  pred_gam3[[i]] <-predict(foldlist_gam[[i]], var_gam3, type="response")
+  #pred_gam1_mean <- apply(pred_gam1[[i]], c(1), mean)
+  PlanCurv9Imp_gam[[i]] <- 1 - cor(pred_gam_std[[i]], pred_gam3[[i]])
+}
+
+PlanCurv9Imp_gam_mean <- mean(unlist(PlanCurv9Imp_gam))
+PlanCurv9Imp_gam_sd <- sd(unlist(PlanCurv9Imp_gam))
+
+#### Plan.Curvature.33x33 ####
+
+var_gam4 <- var_gam
+var_gam4[,'Plan.Curvature.33x33'] <- sample(var_gam[,'Plan.Curvature.33x33'])
+
+pred_gam4 <- vector(mode="list",length=5)
+PlanCurv33Imp_gam <- vector(mode="list",length=5)
+# loop version 2
+for(i in 1:5) {
+  pred_gam4[[i]] <-predict(foldlist_gam[[i]], var_gam4, type="response")
+  #pred_gam1_mean <- apply(pred_gam1[[i]], c(1), mean)
+  PlanCurv33Imp_gam[[i]] <- 1 - cor(pred_gam_std[[i]], pred_gam4[[i]])
+}
+
+PlanCurv33Imp_gam_mean <- mean(unlist(PlanCurv33Imp_gam))
+PlanCurv33Imp_gam_sd <- sd(unlist(PlanCurv33Imp_gam))
+
+#### bsal ####
+var_gam5 <- var_gam
+var_gam5[,'bsal'] <- sample(var_gam[,'bsal'])
+
+pred_gam5 <- vector(mode="list",length=5)
+bsalImp_gam <- vector(mode="list",length=5)
+# loop version 2
+for(i in 1:5) {
+  pred_gam5[[i]] <-predict(foldlist_gam[[i]], var_gam5, type="response")
+  #pred_gam2_mean <- apply(pred_gam2[[i]], c(1), mean)
+  bsalImp_gam[[i]] <- 1 - cor(pred_gam_std[[i]], pred_gam5[[i]])
+}
+
+bsalImp_gam_mean <- mean(unlist(bsalImp_gam))
+bsalImp_gam_sd <- sd(unlist(bsalImp_gam))
+
+#### Create final dataframe of GAM variables relative importance ####
+VarImp_gam <- data.frame(Slope_33x33 = 0,
+                         Eastness_3x3 = 0,
+                         Eastness_33x33 = East33Imp_gam_mean,
+                         Profile_Curvature_9x9 = ProfCurv9Imp_gam_mean,
+                         Profile_Curvature_17x17 = 0,
+                         Profile_Curvature_33x33 = 0,
+                         Plan_Curvature_9x9 = PlanCurv9Imp_gam_mean,
+                         Plan_Curvature_33x33 = PlanCurv33Imp_gam_mean,
+                         Bottom_Salinity = bsalImp_gam_mean)
+
+row.names(VarImp_gam) <- "GAM"
+VarImp_gam_perc <- (VarImp_gam*100)/sum(VarImp_gam)
+
+library(data.table)
+VarImp_gam_perc_t <- transpose(VarImp_gam_perc)
+rownames(VarImp_gam_perc_t) <- colnames(VarImp_gam_perc)
+colnames(VarImp_gam_perc_t) <- rownames(VarImp_gam_perc)
+library(tibble)
+VarImp_gam_perc_df <- tibble::rownames_to_column(VarImp_gam_perc_t, "Variable")
+Model <- c("GAM", "GAM", "GAM", "GAM", "GAM","GAM","GAM","GAM", "GAM") 
+VarImp_gam_perc_df$Model <- Model
+colnames(VarImp_gam_perc_df)[2] <- "perc_mean"
+
+###
+VarImp_gam_sd <- data.frame(Slope_33x33 = 0,
+                         Eastness_3x3 = 0,
+                         Eastness_33x33 = East33Imp_gam_sd,
+                         Profile_Curvature_9x9 = ProfCurv9Imp_gam_sd,
+                         Profile_Curvature_17x17 = 0,
+                         Profile_Curvature_33x33 = 0,
+                         Plan_Curvature_9x9 = PlanCurv9Imp_gam_sd,
+                         Plan_Curvature_33x33 = PlanCurv33Imp_gam_sd,
+                         Bottom_Salinity = bsalImp_gam_sd)
+
+row.names(VarImp_gam_sd) <- "GAM"
+VarImp_gam_sd_perc <- (VarImp_gam_sd*100)
+
+library(data.table)
+VarImp_gam_sd_perc_t <- transpose(VarImp_gam_sd_perc)
+VarImp_gam_sd_perc_df <- data.frame(VarImp_gam_sd_perc_t)
+colnames(VarImp_gam_sd_perc_df) <- "perc_sd"
+
+VarImp_gam <- cbind(VarImp_gam_perc_df, VarImp_gam_sd_perc_df)
+VarImp_gam
+```
+
+##b. Random Forest
+```{r}
+#### Standard prediction ####
+var_rf <- data_rf[c("Slope.33x33", "Eastness.3x3","Eastness.33x33", 
+                    "Profile.Curvature.9x9", "Profile.Curvature.17x17",
+                    "Profile.Curvature.33x33","Plan.Curvature.33x33","bsal")]
+
+pred_rf_std <- vector(mode="list",length=10)
+#pred_rf_std_mx <- vector(mode="list",length=10)
+
+for(i in 1:5) {
+  pred_rf_std[[i]] <-predict(foldlist_rf[[i]], var_rf, type="response")
+  #pred_rf_std_mx[[i]] <- as.matrix(pred_rf_std[[i]])
+  #pred_rf_std_mean <- apply(pred_rf_std_mx[[i]], c(1), mean)
+}
+
+#### Slope.33x33 ####
+var_rf1 <- var_rf
+var_rf1[,'Slope.33x33'] <- sample(var_rf[,'Slope.33x33'])
+
+pred_rf1 <- vector(mode="list",length=5)
+Slop33Imp_rf <- vector(mode="list",length=5)
+
+for(i in 1:5) {
+  pred_rf1[[i]] <-predict(foldlist_rf[[i]], var_rf1, type="response")
+  Slop33Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf1[[i]])
+}
+
+Slop33Imp_rf_mean <- mean(unlist(Slop33Imp_rf))
+Slop33Imp_rf_sd <- sd(unlist(Slop33Imp_rf))
+
+#### Eastness.3x3 ####
+
+var_rf2 <- var_rf
+var_rf2[,'Eastness.3x3'] <- sample(var_rf[,'Eastness.3x3'])
+
+pred_rf2 <- vector(mode="list",length=5)
+East3Imp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf2[[i]] <-predict(foldlist_rf[[i]], var_rf2, type="response")
+  East3Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf2[[i]])
+}
+
+East3Imp_rf_mean <- mean(unlist(East3Imp_rf))
+East3Imp_rf_sd <- sd(unlist(East3Imp_rf))
+
+#### Eastness.33x33 ####
+var_rf3 <- var_rf
+var_rf3[,'Eastness.33x33'] <- sample(var_rf[,'Eastness.33x33'])
+
+pred_rf3 <- vector(mode="list",length=5)
+East33Imp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf3[[i]] <-predict(foldlist_rf[[i]], var_rf3, type="response")
+  East33Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf3[[i]])
+}
+
+East33Imp_rf_mean <- mean(unlist(East33Imp_rf))
+East33Imp_rf_sd <- sd(unlist(East33Imp_rf))
+
+#### Profile.Curvature.9x9####
+var_rf4 <- var_rf
+var_rf4[,'Profile.Curvature.9x9 '] <- sample(var_rf[,'Profile.Curvature.9x9'])
+
+pred_rf4 <- vector(mode="list",length=5)
+ProfCurv9Imp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf4[[i]] <-predict(foldlist_rf[[i]], var_rf4, type="response")
+  ProfCurv9Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf4[[i]])
+}
+
+ProfCurv9Imp_rf_mean <- mean(unlist(ProfCurv9Imp_rf))
+ProfCurv9Imp_rf_sd <- sd(unlist(ProfCurv9Imp_rf))
+
+#### Profile.Curvature.17x17 ####
+var_rf4 <- var_rf
+var_rf4[,'Profile.Curvature.17x17 '] <- sample(var_rf[,'Profile.Curvature.17x17'])
+
+pred_rf4 <- vector(mode="list",length=5)
+ProfCurv17Imp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf4[[i]] <-predict(foldlist_rf[[i]], var_rf4, type="response")
+  ProfCurv17Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf4[[i]])
+}
+
+ProfCurv17Imp_rf_mean <- mean(unlist(ProfCurv17Imp_rf))
+ProfCurv17Imp_rf_sd <- sd(unlist(ProfCurv17Imp_rf))
+
+#### Profile.Curvature.33x33 ####
+var_rf4 <- var_rf
+var_rf4[,'Profile.Curvature.33x33'] <- sample(var_rf[,'Profile.Curvature.33x33'])
+
+pred_rf4 <- vector(mode="list",length=5)
+ProfCurv33Imp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf4[[i]] <-predict(foldlist_rf[[i]], var_rf4, type="response")
+  ProfCurv33Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf4[[i]])
+}
+
+ProfCurv33Imp_rf_mean <- mean(unlist(ProfCurv33Imp_rf))
+ProfCurv33Imp_rf_sd <- sd(unlist(ProfCurv33Imp_rf))
+
+
+#### Plan.Curvature.33x33 ####
+var_rf5 <- var_rf
+var_rf5[,'Plan.Curvature.33x33'] <- sample(var_rf[,'Plan.Curvature.33x33'])
+
+pred_rf5 <- vector(mode="list",length=5)
+PlanCurv33Imp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf5[[i]] <-predict(foldlist_rf[[i]], var_rf5, type="response")
+  PlanCurv33Imp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf5[[i]])
+}
+
+PlanCurv33Imp_rf_mean <- mean(unlist(PlanCurv33Imp_rf))
+PlanCurv33Imp_rf_sd <- sd(unlist(PlanCurv33Imp_rf))
+
+#### bsal ####
+var_rf6 <- var_rf
+var_rf6[,'bsal'] <- sample(var_rf[,'bsal'])
+
+pred_rf6 <- vector(mode="list",length=5)
+bsalImp_rf <- vector(mode="list",length=5)
+
+
+for(i in 1:5) {
+  pred_rf6[[i]] <-predict(foldlist_rf[[i]], var_rf6, type="response")
+  bsalImp_rf[[i]] <- 1 - cor(pred_rf_std[[i]], pred_rf6[[i]])
+}
+
+bsalImp_rf_mean <- mean(unlist(bsalImp_rf))
+bsalImp_rf_sd <- sd(unlist(bsalImp_rf))
+
+#### Create final dataframe of RF variables relative importance ####
+VarImp_rf_mean <- data.frame(Slope_33x33 = Slop33Imp_rf_mean,
+                         Eastness_3x3 = East3Imp_rf_mean,
+                         Eastness_33x33 = East33Imp_rf_mean,
+                         Profile_Curvature_9x9 = ProfCurv9Imp_rf_mean,
+                         Profile_Curvature_17x17 = ProfCurv17Imp_rf_mean,
+                         Profile_Curvature_33x33 = ProfCurv33Imp_rf_mean,
+                         Plan_Curvature_9x9 = 0,
+                         Plan_Curvature_33x33 = PlanCurv33Imp_rf_mean,
+                         Bottom_Salinity = bsalImp_rf_mean)
+
+row.names(VarImp_rf_mean) <- "RF"
+VarImp_rf_perc <- (VarImp_rf_mean*100)/sum(VarImp_rf_mean)
+
+library(data.table)
+VarImp_rf_perc_t <- transpose(VarImp_rf_perc)
+rownames(VarImp_rf_perc_t) <- colnames(VarImp_rf_perc)
+colnames(VarImp_rf_perc_t) <- rownames(VarImp_rf_perc)
+library(tibble)
+VarImp_rf_perc_df <- tibble::rownames_to_column(VarImp_rf_perc_t, "Variable")
+Model <- c("RF", "RF", "RF", "RF", "RF","RF","RF","RF", "RF") 
+VarImp_rf_perc_df$Model <- Model
+colnames(VarImp_rf_perc_df)[2] <- "perc_mean"
+
+###
+VarImp_rf_sd <- data.frame(Slope_33x33 = Slop33Imp_rf_sd,
+                         Eastness_3x3 = East3Imp_rf_sd,
+                         Eastness_33x33 = East33Imp_rf_sd,
+                         Profile_Curvature_9x9 = ProfCurv9Imp_rf_sd,
+                         Profile_Curvature_17x17 = ProfCurv17Imp_rf_sd,
+                         Profile_Curvature_33x33 = ProfCurv33Imp_rf_sd,
+                         Plan_Curvature_9x9 = 0,
+                         Plan_Curvature_33x33 = PlanCurv33Imp_rf_sd,
+                         Bottom_Salinity = bsalImp_rf_sd)
+
+row.names(VarImp_rf_sd) <- "RF"
+VarImp_rf_sd_perc <- (VarImp_rf_sd*100)
+
+library(data.table)
+VarImp_rf_sd_perc_t <- transpose(VarImp_rf_sd_perc)
+VarImp_rf_sd_perc_df <- data.frame(VarImp_rf_sd_perc_t)
+colnames(VarImp_rf_sd_perc_df) <- "perc_sd"
+
+VarImp_rf <- cbind(VarImp_rf_perc_df, VarImp_rf_sd_perc_df)
+VarImp_rf
+```
+
+
+```{r}
+VarImp <- rbind(VarImp_rf, VarImp_gam)
+VarImp$perc_mean <- as.numeric(VarImp$perc_mean)
+VarImp$perc_sd <- as.numeric(VarImp$perc_sd)
+
+VarImp$Variable[VarImp$Variable == 'Slope_33x33'] <- 'Slope 33x33'
+VarImp$Variable[VarImp$Variable == 'Eastness_3x3'] <- 'Eastness 3x3'
+VarImp$Variable[VarImp$Variable == 'Eastness_33x33'] <- 'Eastness 33x33'
+VarImp$Variable[VarImp$Variable == 'Profile_Curvature_9x9'] <- 'Profile Curvature 9x9'
+VarImp$Variable[VarImp$Variable == 'Profile_Curvature_17x17'] <- 'Profile Curvature 17x17'
+VarImp$Variable[VarImp$Variable == 'Profile_Curvature_33x33'] <- 'Profile Curvature 33x33'
+VarImp$Variable[VarImp$Variable == 'Plan_Curvature_9x9'] <- 'Plan Curvature 9x9'
+VarImp$Variable[VarImp$Variable == 'Plan_Curvature_33x33'] <- 'Plan Curvature 33x33'
+VarImp$Variable[VarImp$Variable == 'Bottom_Salinity'] <- 'Bottom Salinity'
+
+write.csv(VarImp, "Acanella_VarImp.csv") #Export for model interpretation
+```
+
+# 10. Export rasters and data with the final model outputs
+
+```{r}
+#Export probability maps
+writeRaster(pred_gam_mean, "Acanella_GAM_MeanProb", overwrite = TRUE)  
+writeRaster(pred_gam_sd, "Acanella_GAM_SD", overwrite = TRUE) 
+
+writeRaster(pred_rf_mean, "Acanella_RF_MeanProb", overwrite = TRUE)  
+writeRaster(pred_rf_sd, "Acanella_RF_SD", overwrite = TRUE) 
+
+writeRaster(ensemble_model, "Acanella_ENSEMBLE__MeanProb", overwrite = TRUE)  
+writeRaster(CV.ense, "Acanella_ENSEMBLE_CoefVari", overwrite = TRUE) 
+```
+
+```{r}
+#Export categorical maps
+writeRaster(gam_class_map, "Acanella_GAM_class", overwrite = TRUE)  
+writeRaster(rf_class_map, "Acanella_RF_class", overwrite = TRUE)  
+writeRaster(ensemble_class_map, "Acanella_ENSEMBLE_class", overwrite=TRUE)  
+```
+
+```{r}
+## Create predictions dataframe
+pred_rf_mean_ptx <- rasterToPoints(pred_rf_mean) #raster to points of mean predicted raster
+pred_gam_mean_ptx <- rasterToPoints(pred_gam_mean)
+
+pred_rf_mean_df <- data.frame(pred_rf_mean_ptx) 
+pred_gam_mean_df <- data.frame(pred_gam_mean_ptx) 
+
+pred_rf_mean_df$Model_name <- c(rep("RF", nrow(pred_rf_mean_df)))#create column to store model name
+pred_gam_mean_df$Model_name <- c(rep("GAM", nrow(pred_gam_mean_df))) 
+
+models_pred_df <- data.frame(rbind(pred_rf_mean_df, pred_gam_mean_df))  #join mean predicted values of each model into single df
+colnames(models_pred_df) <- c("X","Y","Predictions", "Model") #change names
+
+xy_models_pred <- models_pred_df[c(1,2)] #extract xy
+
+##Prepare data
+env_pred_models <- raster::extract(preds, xy_models_pred) #extract predicted values from prediction grid
+response_models <- as.data.frame(cbind(models_pred_df,env_pred_models))
+write.csv(response_models, "Acanella_Models_response.csv")  #extract for Model interpretation 
+```
+
+```{r}
+###
+## Create predictions dataframe
+pred_ensemble_ptx <- rasterToPoints(ensemble_model) #raster to points of mean predicted raster
+ensemble_model_df <- data.frame(pred_ensemble_ptx) 
+
+ensemble_model_df$Model_name <- c(rep("Ensemble", nrow(ensemble_model_df)))#create column to store model name
+colnames(ensemble_model_df) <- c("X","Y","Predictions", "Model") #change names
+
+xy_ensemblemodels_pred <- ensemble_model_df[c(1,2)] #extract xy 
+env_ensemblepred_models <- raster::extract(preds, xy_ensemblemodels_pred) #extract predicted values from prediction grid
+ensemble_response_models <- as.data.frame(cbind(ensemble_model_df,env_ensemblepred_models))
+ensemble_response_models$Species <- "Acanella arbuscula"
+write.csv(ensemble_response_models, "Acanella_Ensemble.csv") 
+```
+
+
+
